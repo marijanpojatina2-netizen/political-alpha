@@ -206,7 +206,7 @@ async function sendNewsletter(html, subscriberEmails) {
   const results = [];
   for (const batch of batches) {
     const { data, error } = await resend.emails.send({
-      from: "Political Alpha <onboarding@resend.dev>",
+      from: "Political Alpha <newsletter@kkdinamo.hr>",
       to: "Political Alpha <onboarding@resend.dev>",
       bcc: batch,
       subject: `Political Alpha - ${today} Daily Briefing`,
