@@ -247,13 +247,74 @@ async function fetchGoogleNewsRSS() {
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// SOURCE 4: Capitol Trades (capitoltrades.com/trades)
+// SOURCE 4: Capitol Trades JSON API (bff.capitoltrades.com)
 // ---------------------------------------------------------------------------
-// The best structured source — contains politician name, party, ticker,
-// trade date, published date, buy/sell, size range, and price.
+// Capitol Trades uses a backend-for-frontend (BFF) API that returns JSON.
+// No auth needed. Returns politician names, tickers, dates, amounts, prices.
 // ---------------------------------------------------------------------------
 
 async function fetchCapitolTrades() {
+  const trades = [];
+  try {
+    const resp = await fetch("https://bff.capitoltrades.com/trades?page=1&pageSize=25&sortBy=-publishedDate", {
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+        "Accept": "application/json",
+        "Origin": "https://www.capitoltrades.com",
+        "Referer": "https://www.capitoltrades.com/",
+      },
+    });
+
+    if (!resp.ok) {
+      console.warn(`[CapitolTrades] HTTP ${resp.status}`);
+      // Fallback: try alternate URL format
+      return await fetchCapitolTradesFallback();
+    }
+
+    const json = await resp.json();
+    const data = json.data || json || [];
+
+    for (const trade of (Array.isArray(data) ? data : [])) {
+      try {
+        const politician = trade.politician || {};
+        const issuer = trade.issuer || {};
+        const name = [politician.firstName, politician.lastName].filter(Boolean).join(" ") || "Unknown";
+        const party = politician.party || "";
+        const chamber = politician.chamber || "";
+        const partyShort = party === "Democrat" ? "D" : party === "Republican" ? "R" : party.charAt(0);
+        const chamberShort = chamber === "house" ? "House" : chamber === "senate" ? "Senate" : chamber;
+        const ticker = issuer.ticker || "";
+        const issuerName = issuer.name || "";
+        const txType = (trade.txType || trade.type || "").toUpperCase();
+        const txDate = trade.txDate || trade.tradedDate || "";
+        const pubDate = trade.pubDate || trade.publishedDate || "";
+        const size = trade.size || trade.txAmount || "";
+        const price = trade.price ? `$${trade.price}` : "";
+        const owner = trade.owner || "";
+
+        const label = `${name} (${partyShort}-${chamberShort})`;
+        const sizeLabel = size ? ` ${size}` : "";
+        const priceLabel = price ? ` at ${price}` : "";
+        const ownerLabel = owner && owner !== "Self" && owner !== "Undisclosed" ? ` [${owner}]` : "";
+
+        trades.push({
+          source: "Capitol Trades",
+          text: `${label}: ${txType} $${ticker} (${issuerName})${sizeLabel}${priceLabel}${ownerLabel} — Traded ${txDate}`,
+          date: pubDate || txDate || new Date().toISOString(),
+        });
+      } catch (e) { /* skip unparseable trade */ }
+    }
+
+    console.log(`[CapitolTrades] ${trades.length} trades from API`);
+  } catch (err) {
+    console.warn(`[CapitolTrades] API error: ${err.message}`);
+    return await fetchCapitolTradesFallback();
+  }
+  return trades;
+}
+
+// Fallback: try the HTML page and extract from rendered table
+async function fetchCapitolTradesFallback() {
   const trades = [];
   try {
     const resp = await fetch("https://www.capitoltrades.com/trades", {
@@ -262,75 +323,36 @@ async function fetchCapitolTrades() {
         "Accept": "text/html",
       },
     });
-
-    if (!resp.ok) {
-      console.warn(`[CapitolTrades] HTTP ${resp.status}`);
-      return trades;
-    }
+    if (!resp.ok) return trades;
 
     const html = await resp.text();
 
-    // The trades page has a table. Each row contains:
-    // | Politician (with party/chamber) | Issuer (with ticker) | Published | Traded | Filed After | Owner | Type | Size | Price |
-    // We parse the markdown-style table that web_fetch returns.
+    // Log a snippet for debugging
+    console.log("[CapitolTrades Fallback] HTML length:", html.length);
+    console.log("[CapitolTrades Fallback] First 500 chars:", html.substring(0, 500));
 
-    // Split into table rows — look for politician links pattern
-    const rows = html.split(/\[Goto trade detail page\.\]/g);
-
-    for (const row of rows.slice(0, 30)) { // Process up to 30 most recent trades
+    // Try to find embedded JSON data (Next.js __NEXT_DATA__ or similar)
+    const nextDataMatch = html.match(/<script[^>]*id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/);
+    if (nextDataMatch) {
       try {
-        // Extract politician name and details
-        // Pattern: [Name](/politicians/ID) Party Chamber State
-        const politicianMatch = row.match(/\[([^\]]+)\]\(\/politicians\/[^)]+\)\s*(Democrat|Republican)?(House|Senate)?\s*(\w{2})?/i);
-        const politician = politicianMatch ? politicianMatch[1].trim() : null;
-        const party = politicianMatch ? (politicianMatch[2] || "") : "";
-        const chamber = politicianMatch ? (politicianMatch[3] || "") : "";
-
-        if (!politician) continue;
-
-        // Extract issuer/ticker
-        // Pattern: [Company Name](/issuers/ID) TICKER:US
-        const issuerMatch = row.match(/\[([^\]]+)\]\(\/issuers\/[^)]+\)\s*([A-Z]{1,6}):?(?:US)?/i);
-        const company = issuerMatch ? issuerMatch[1].trim() : "Unknown";
-        const ticker = issuerMatch ? issuerMatch[2].trim() : "";
-
-        // Extract trade date
-        // Pattern: dates like "11 Feb 2026" or "3 Feb 2026"
-        const dateMatches = [...row.matchAll(/(\d{1,2}\s+\w{3}\s+\d{4})/g)];
-        const tradeDate = dateMatches.length >= 1 ? dateMatches[0][1] : "";
-        const publishedDate = dateMatches.length >= 2 ? dateMatches[1][1] : tradeDate;
-
-        // Extract type (buy/sell)
-        const typeMatch = row.match(/\|\s*(buy|sell)\s*\|/i);
-        const transaction = typeMatch ? typeMatch[1].toUpperCase() : "";
-
-        // Extract size range
-        const sizeMatch = row.match(/\|\s*(\d+K?–[\d,]+K?|\d+K?–\d+M)\s*\|/i);
-        const size = sizeMatch ? sizeMatch[1] : "";
-
-        // Extract price
-        const priceMatch = row.match(/\$[\d,.]+/);
-        const price = priceMatch ? priceMatch[0] : "";
-
-        if (!ticker && !company.includes("N/A")) continue; // Skip trades without tickers
-
-        const partyLabel = party ? ` (${party.charAt(0)}-${chamber})` : "";
-        const sizeLabel = size ? ` $${size}` : "";
-        const priceLabel = price ? ` at ${price}` : "";
-
-        trades.push({
-          source: "Capitol Trades",
-          text: `${politician}${partyLabel}: ${transaction} $${ticker || "N/A"} (${company})${sizeLabel}${priceLabel} — Traded ${tradeDate || "recently"}`,
-          date: tradeDate || new Date().toISOString(),
-        });
-      } catch (e) {
-        // Skip unparseable rows
-      }
+        const nextData = JSON.parse(nextDataMatch[1]);
+        const tradeList = nextData?.props?.pageProps?.trades?.data || [];
+        for (const trade of tradeList.slice(0, 25)) {
+          const pol = trade.politician || {};
+          const iss = trade.issuer || {};
+          const name = [pol.firstName, pol.lastName].filter(Boolean).join(" ");
+          trades.push({
+            source: "Capitol Trades",
+            text: `${name}: ${(trade.txType || "").toUpperCase()} $${iss.ticker || "?"} (${iss.name || "?"}) — Traded ${trade.txDate || "?"}`,
+            date: trade.pubDate || new Date().toISOString(),
+          });
+        }
+      } catch (e) { /* JSON parse failed */ }
     }
 
-    console.log(`[CapitolTrades] ${trades.length} trades parsed`);
+    console.log(`[CapitolTrades Fallback] ${trades.length} trades`);
   } catch (err) {
-    console.warn(`[CapitolTrades] Error: ${err.message}`);
+    console.warn(`[CapitolTrades Fallback] Error: ${err.message}`);
   }
   return trades;
 }
