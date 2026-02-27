@@ -63,64 +63,75 @@ async function fetchQuiverQuantTrades() {
 
     const html = await resp.text();
 
-    // Extract individual trade articles from the news page.
-    // Each article contains: politician name, list of trades (Purchase/Sale of $TICKER)
-    // Pattern: "Congress Trade: Representative/Senator NAME Just Disclosed..."
-    // Followed by: "Purchase of $TICKER" or "Sale of $TICKER"
+    // The page contains articles in this format (as rendered markdown in HTML):
+    //   "Congress Trade: Representative Jake Auchincloss Just Disclosed..."
+    //   "15 hours ago | Feb. 20, 2026 2:16 p.m. UTC"
+    //   "* **Sale** of [$STT](https://www.quiverquant.com/stock/STT/) stock (STATE STREET...)"
+    //   "* **Purchase** of [$ABT](https://www.quiverquant.com/stock/ABT/) stock (ABBOTT...)"
 
-    // Split by article blocks
-    const articles = html.split(/Congress Trade:/g).slice(1); // skip first empty split
+    // Split the page into article blocks by looking for the filing headers
+    const articles = html.split(/Congress Trade:\s*/g).slice(1);
 
-    for (const article of articles.slice(0, 15)) { // Process up to 15 recent articles
-      // Extract politician name
-      const nameMatch = article.match(/(?:Representative|Senator)\s+([\w\s.,'-]+?)\s+Just Disclosed/i);
-      const politician = nameMatch ? nameMatch[1].trim() : "Unknown";
+    for (const article of articles.slice(0, 15)) {
+      // Extract politician name and type (Representative/Senator)
+      const nameMatch = article.match(/(Representative|Senator)\s+([\w\s.,'-]+?)\s+Just Disclosed/i);
+      const role = nameMatch ? nameMatch[1] : "";
+      const politician = nameMatch ? nameMatch[2].trim() : "Unknown";
+      const fullName = role ? `${role} ${politician}` : politician;
 
-      // Extract time ago
-      const timeMatch = article.match(/(\d+)\s+(hours?|days?|minutes?)\s+ago/i);
-      let isRecent = true;
-      if (timeMatch) {
-        const num = parseInt(timeMatch[1]);
-        const unit = timeMatch[2].toLowerCase();
-        if (unit.startsWith("day") && num > 3) isRecent = false;
-      }
+      // Extract date: "15 hours ago | Feb. 20, 2026 2:16 p.m. UTC"
+      const dateMatch = article.match(/(\w+\.\s+\d+,\s+\d{4})/);
+      const filingDate = dateMatch ? dateMatch[1] : new Date().toLocaleDateString("en-US");
 
-      // Extract all trades (Purchase/Sale of $TICKER)
-      const tradeMatches = article.matchAll(/\*\*?(Purchase|Sale)\*\*?\s+of\s+\[\$(\w+)\]/gi);
-      for (const match of tradeMatches) {
-        const transaction = match[1].toLowerCase() === "purchase" ? "BUY" : "SELL";
-        const ticker = match[2];
+      // Extract trades — the HTML contains links like:
+      //   [$STT](https://www.quiverquant.com/stock/STT/)
+      // preceded by **Purchase** or **Sale**
+      // After HTML rendering, this becomes clickable links.
+      // We match both markdown and rendered HTML formats:
+
+      // Format 1: Markdown style — **Sale** of [$TICKER](url)
+      const mdMatches = article.matchAll(/\*\*(Purchase|Sale)\*\*\s+of\s+\[\$(\w+)\]\([^)]*\)\s*(?:stock\s*\(([^)]*)\))?/gi);
+      for (const m of mdMatches) {
+        const transaction = m[1].toLowerCase() === "purchase" ? "BUY" : "SELL";
+        const ticker = m[2];
+        const stockName = m[3] ? m[3].trim() : "";
         trades.push({
           source: "QuiverQuant Congress",
-          text: `Congress STOCK Act Filing: ${politician} — ${transaction} of $${ticker}`,
-          date: new Date().toISOString(),
-          politician,
-          ticker,
-          transaction,
-          isRecent,
+          text: `${fullName} (${role || "Congress"}) filed STOCK Act: ${transaction} $${ticker}${stockName ? " (" + stockName + ")" : ""} — Filed ${filingDate}`,
+          date: filingDate,
         });
       }
 
-      // Fallback: also try matching without markdown bold
-      if (trades.filter(t => t.politician === politician).length === 0) {
-        const fallbackMatches = article.matchAll(/(Purchase|Sale)\s+of\s+\$(\w+)/gi);
-        for (const match of fallbackMatches) {
-          const transaction = match[1].toLowerCase() === "purchase" ? "BUY" : "SELL";
-          const ticker = match[2];
+      // Format 2: Rendered HTML — <strong>Sale</strong> of <a href="/stock/STT/">$STT</a>
+      if (trades.filter(t => t.text.includes(politician)).length === 0) {
+        const htmlMatches = article.matchAll(/<strong>(Purchase|Sale)<\/strong>\s+of\s+<a[^>]*>\$(\w+)<\/a>/gi);
+        for (const m of htmlMatches) {
+          const transaction = m[1].toLowerCase() === "purchase" ? "BUY" : "SELL";
+          const ticker = m[2];
           trades.push({
             source: "QuiverQuant Congress",
-            text: `Congress STOCK Act Filing: ${politician} — ${transaction} of $${ticker}`,
-            date: new Date().toISOString(),
-            politician,
-            ticker,
-            transaction,
-            isRecent,
+            text: `${fullName} (${role || "Congress"}) filed STOCK Act: ${transaction} $${ticker} — Filed ${filingDate}`,
+            date: filingDate,
+          });
+        }
+      }
+
+      // Format 3: Plain text fallback — Purchase of $TICKER or Sale of $TICKER
+      if (trades.filter(t => t.text.includes(politician)).length === 0) {
+        const plainMatches = article.matchAll(/(Purchase|Sale)\s+of\s+\$(\w+)/gi);
+        for (const m of plainMatches) {
+          const transaction = m[1].toLowerCase() === "purchase" ? "BUY" : "SELL";
+          const ticker = m[2];
+          trades.push({
+            source: "QuiverQuant Congress",
+            text: `${fullName} (${role || "Congress"}) filed STOCK Act: ${transaction} $${ticker} — Filed ${filingDate}`,
+            date: filingDate,
           });
         }
       }
     }
 
-    console.log(`[QuiverQuant] ${trades.length} individual trades extracted from ${Math.min(articles.length, 15)} filings`);
+    console.log(`[QuiverQuant] ${trades.length} congress trades from ${Math.min(articles.length, 15)} filings`);
   } catch (err) {
     console.warn(`[QuiverQuant] Error: ${err.message}`);
   }
@@ -235,37 +246,93 @@ async function fetchGoogleNewsRSS() {
 // SOURCE 4: Twitter Syndication (best-effort)
 // ---------------------------------------------------------------------------
 
-const TWITTER_HANDLES = ["pelositracker", "capitol2iq", "QuiverQuant", "unusual_whales"];
+// ---------------------------------------------------------------------------
+// SOURCE 4: Capitol Trades (capitoltrades.com/trades)
+// ---------------------------------------------------------------------------
+// The best structured source — contains politician name, party, ticker,
+// trade date, published date, buy/sell, size range, and price.
+// ---------------------------------------------------------------------------
 
-async function fetchTwitterData() {
-  const tweets = [];
-  for (const handle of TWITTER_HANDLES) {
-    try {
-      const url = `https://syndication.twitter.com/srv/timeline-profile/screen-name/${handle}`;
-      const resp = await fetch(url, {
-        headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36" },
-      });
-      if (!resp.ok) {
-        console.log(`[Twitter] @${handle}: HTTP ${resp.status}`);
-        continue;
-      }
-      const html = await resp.text();
-      // Try to extract tweet text from the page
-      const tweetTexts = html.matchAll(/<p[^>]*>([\s\S]*?)<\/p>/gi);
-      let count = 0;
-      for (const m of tweetTexts) {
-        const text = stripHtml(m[1]);
-        if (text.length > 30 && count < 5) {
-          tweets.push({ source: `Twitter @${handle}`, text, date: new Date().toISOString() });
-          count++;
-        }
-      }
-      if (count > 0) console.log(`[Twitter] @${handle}: ${count} tweets`);
-    } catch (err) {
-      console.log(`[Twitter] @${handle}: ${err.message}`);
+async function fetchCapitolTrades() {
+  const trades = [];
+  try {
+    const resp = await fetch("https://www.capitoltrades.com/trades", {
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+        "Accept": "text/html",
+      },
+    });
+
+    if (!resp.ok) {
+      console.warn(`[CapitolTrades] HTTP ${resp.status}`);
+      return trades;
     }
+
+    const html = await resp.text();
+
+    // The trades page has a table. Each row contains:
+    // | Politician (with party/chamber) | Issuer (with ticker) | Published | Traded | Filed After | Owner | Type | Size | Price |
+    // We parse the markdown-style table that web_fetch returns.
+
+    // Split into table rows — look for politician links pattern
+    const rows = html.split(/\[Goto trade detail page\.\]/g);
+
+    for (const row of rows.slice(0, 30)) { // Process up to 30 most recent trades
+      try {
+        // Extract politician name and details
+        // Pattern: [Name](/politicians/ID) Party Chamber State
+        const politicianMatch = row.match(/\[([^\]]+)\]\(\/politicians\/[^)]+\)\s*(Democrat|Republican)?(House|Senate)?\s*(\w{2})?/i);
+        const politician = politicianMatch ? politicianMatch[1].trim() : null;
+        const party = politicianMatch ? (politicianMatch[2] || "") : "";
+        const chamber = politicianMatch ? (politicianMatch[3] || "") : "";
+
+        if (!politician) continue;
+
+        // Extract issuer/ticker
+        // Pattern: [Company Name](/issuers/ID) TICKER:US
+        const issuerMatch = row.match(/\[([^\]]+)\]\(\/issuers\/[^)]+\)\s*([A-Z]{1,6}):?(?:US)?/i);
+        const company = issuerMatch ? issuerMatch[1].trim() : "Unknown";
+        const ticker = issuerMatch ? issuerMatch[2].trim() : "";
+
+        // Extract trade date
+        // Pattern: dates like "11 Feb 2026" or "3 Feb 2026"
+        const dateMatches = [...row.matchAll(/(\d{1,2}\s+\w{3}\s+\d{4})/g)];
+        const tradeDate = dateMatches.length >= 1 ? dateMatches[0][1] : "";
+        const publishedDate = dateMatches.length >= 2 ? dateMatches[1][1] : tradeDate;
+
+        // Extract type (buy/sell)
+        const typeMatch = row.match(/\|\s*(buy|sell)\s*\|/i);
+        const transaction = typeMatch ? typeMatch[1].toUpperCase() : "";
+
+        // Extract size range
+        const sizeMatch = row.match(/\|\s*(\d+K?–[\d,]+K?|\d+K?–\d+M)\s*\|/i);
+        const size = sizeMatch ? sizeMatch[1] : "";
+
+        // Extract price
+        const priceMatch = row.match(/\$[\d,.]+/);
+        const price = priceMatch ? priceMatch[0] : "";
+
+        if (!ticker && !company.includes("N/A")) continue; // Skip trades without tickers
+
+        const partyLabel = party ? ` (${party.charAt(0)}-${chamber})` : "";
+        const sizeLabel = size ? ` $${size}` : "";
+        const priceLabel = price ? ` at ${price}` : "";
+
+        trades.push({
+          source: "Capitol Trades",
+          text: `${politician}${partyLabel}: ${transaction} $${ticker || "N/A"} (${company})${sizeLabel}${priceLabel} — Traded ${tradeDate || "recently"}`,
+          date: tradeDate || new Date().toISOString(),
+        });
+      } catch (e) {
+        // Skip unparseable rows
+      }
+    }
+
+    console.log(`[CapitolTrades] ${trades.length} trades parsed`);
+  } catch (err) {
+    console.warn(`[CapitolTrades] Error: ${err.message}`);
   }
-  return tweets;
+  return trades;
 }
 
 // ---------------------------------------------------------------------------
@@ -278,11 +345,11 @@ async function gatherAllData() {
     fetchQuiverQuantTrades(),
     fetchQuiverQuantInsiders(),
     fetchGoogleNewsRSS(),
-    fetchTwitterData(),
+    fetchCapitolTrades(),
   ]);
 
   let allItems = [];
-  const labels = ["QuiverQuant Congress", "QuiverQuant Insiders", "Google News", "Twitter"];
+  const labels = ["QuiverQuant Congress", "QuiverQuant Insiders", "Google News", "Capitol Trades"];
   results.forEach((r, i) => {
     if (r.status === "fulfilled") allItems.push(...r.value);
     else errors.push(labels[i]);

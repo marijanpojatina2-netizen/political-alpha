@@ -3,7 +3,11 @@
   "version": "1.0.0",
   "private": true,
   "description": "Automated daily newsletter tracking political & whale trades from X/Twitter",
-  "scripts": {},
+  "scripts": {
+    "dev": "vercel dev",
+    "build": "vercel build",
+    "test-cron": "node --experimental-fetch api/cron.js"
+  },
   "dependencies": {
     "@google/generative-ai": "^0.21.0",
     "resend": "^4.1.0"
