@@ -6,8 +6,8 @@
     }
   ],
   "functions": {
-    "api/cron.js": {
+    "api/cron.mjs": {
       "maxDuration": 60
     }
   }
-}
+} 
