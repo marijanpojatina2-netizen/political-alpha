@@ -404,8 +404,8 @@ If there are no identifiable trades in the data, still analyze any news for mark
 
 async function analyzeWithGemini(items) {
   const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-  const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
-
+  const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash-001" })
+  
   const itemText = items
     .map((t, i) => `[${i + 1}] (${t.source}, ${new Date(t.date).toLocaleDateString()}): ${t.text}`)
     .join("\n\n");
