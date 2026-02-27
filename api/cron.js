@@ -63,16 +63,35 @@ async function fetchQuiverQuantTrades() {
 
     const html = await resp.text();
 
-    // The page contains articles in this format (as rendered markdown in HTML):
-    //   "Congress Trade: Representative Jake Auchincloss Just Disclosed..."
-    //   "15 hours ago | Feb. 20, 2026 2:16 p.m. UTC"
-    //   "* **Sale** of [$STT](https://www.quiverquant.com/stock/STT/) stock (STATE STREET...)"
-    //   "* **Purchase** of [$ABT](https://www.quiverquant.com/stock/ABT/) stock (ABBOTT...)"
+    // DEBUG: Log a section around "Congress Trade:" to see exact format
+    const ctIdx = html.indexOf("Congress Trade:");
+    if (ctIdx >= 0) {
+      console.log("[QuiverQuant DEBUG] Raw HTML around first article (500 chars):");
+      console.log(html.substring(ctIdx, ctIdx + 500));
+    } else {
+      console.log("[QuiverQuant DEBUG] 'Congress Trade:' NOT FOUND in HTML");
+      console.log("[QuiverQuant DEBUG] HTML length:", html.length);
+      console.log("[QuiverQuant DEBUG] First 300 chars:", html.substring(0, 300));
+      // Try alternative patterns
+      const altPatterns = ["Purchase", "Sale", "STOCK Act", "Disclosed", "Representative", "Senator"];
+      for (const p of altPatterns) {
+        const idx = html.indexOf(p);
+        console.log(`[QuiverQuant DEBUG] Pattern "${p}" found at index: ${idx}`);
+        if (idx >= 0) {
+          console.log(`[QuiverQuant DEBUG] Context: ...${html.substring(Math.max(0, idx - 50), idx + 100)}...`);
+        }
+      }
+    }
 
     // Split the page into article blocks by looking for the filing headers
     const articles = html.split(/Congress Trade:\s*/g).slice(1);
 
     for (const article of articles.slice(0, 15)) {
+      // DEBUG: log first article snippet
+      if (trades.length === 0) {
+        console.log("[QuiverQuant DEBUG] First article (300 chars):", article.substring(0, 300));
+      }
+
       // Extract politician name and type (Representative/Senator)
       const nameMatch = article.match(/(Representative|Senator)\s+([\w\s.,'-]+?)\s+Just Disclosed/i);
       const role = nameMatch ? nameMatch[1] : "";
@@ -83,14 +102,12 @@ async function fetchQuiverQuantTrades() {
       const dateMatch = article.match(/(\w+\.\s+\d+,\s+\d{4})/);
       const filingDate = dateMatch ? dateMatch[1] : new Date().toLocaleDateString("en-US");
 
-      // Extract trades — the HTML contains links like:
-      //   [$STT](https://www.quiverquant.com/stock/STT/)
-      // preceded by **Purchase** or **Sale**
-      // After HTML rendering, this becomes clickable links.
-      // We match both markdown and rendered HTML formats:
+      // Try ALL formats for trade extraction:
 
-      // Format 1: Markdown style — **Sale** of [$TICKER](url)
-      const mdMatches = article.matchAll(/\*\*(Purchase|Sale)\*\*\s+of\s+\[\$(\w+)\]\([^)]*\)\s*(?:stock\s*\(([^)]*)\))?/gi);
+      let foundForPolitician = false;
+
+      // Format 1: Markdown style — **Sale** of [$TICKER](url) stock (FULL NAME)
+      const mdMatches = [...article.matchAll(/\*\*(Purchase|Sale)\*\*\s+of\s+\[\$(\w+)\]\([^)]*\)\s*(?:stock\s*\(([^)]*)\))?/gi)];
       for (const m of mdMatches) {
         const transaction = m[1].toLowerCase() === "purchase" ? "BUY" : "SELL";
         const ticker = m[2];
@@ -100,11 +117,12 @@ async function fetchQuiverQuantTrades() {
           text: `${fullName} (${role || "Congress"}) filed STOCK Act: ${transaction} $${ticker}${stockName ? " (" + stockName + ")" : ""} — Filed ${filingDate}`,
           date: filingDate,
         });
+        foundForPolitician = true;
       }
 
       // Format 2: Rendered HTML — <strong>Sale</strong> of <a href="/stock/STT/">$STT</a>
-      if (trades.filter(t => t.text.includes(politician)).length === 0) {
-        const htmlMatches = article.matchAll(/<strong>(Purchase|Sale)<\/strong>\s+of\s+<a[^>]*>\$(\w+)<\/a>/gi);
+      if (!foundForPolitician) {
+        const htmlMatches = [...article.matchAll(/<strong>(Purchase|Sale)<\/strong>\s+of\s+<a[^>]*>\$(\w+)<\/a>/gi)];
         for (const m of htmlMatches) {
           const transaction = m[1].toLowerCase() === "purchase" ? "BUY" : "SELL";
           const ticker = m[2];
@@ -113,12 +131,28 @@ async function fetchQuiverQuantTrades() {
             text: `${fullName} (${role || "Congress"}) filed STOCK Act: ${transaction} $${ticker} — Filed ${filingDate}`,
             date: filingDate,
           });
+          foundForPolitician = true;
         }
       }
 
-      // Format 3: Plain text fallback — Purchase of $TICKER or Sale of $TICKER
-      if (trades.filter(t => t.text.includes(politician)).length === 0) {
-        const plainMatches = article.matchAll(/(Purchase|Sale)\s+of\s+\$(\w+)/gi);
+      // Format 3: HTML bold tag — <b>Sale</b> of <a>$STT</a>
+      if (!foundForPolitician) {
+        const bMatches = [...article.matchAll(/<b>(Purchase|Sale)<\/b>\s+of\s+<a[^>]*>\$?(\w+)<\/a>/gi)];
+        for (const m of bMatches) {
+          const transaction = m[1].toLowerCase() === "purchase" ? "BUY" : "SELL";
+          const ticker = m[2];
+          trades.push({
+            source: "QuiverQuant Congress",
+            text: `${fullName} (${role || "Congress"}) filed STOCK Act: ${transaction} $${ticker} — Filed ${filingDate}`,
+            date: filingDate,
+          });
+          foundForPolitician = true;
+        }
+      }
+
+      // Format 4: Plain text fallback — Purchase of $TICKER or Sale of $TICKER
+      if (!foundForPolitician) {
+        const plainMatches = [...article.matchAll(/(Purchase|Sale)\s+of\s+\$(\w+)/gi)];
         for (const m of plainMatches) {
           const transaction = m[1].toLowerCase() === "purchase" ? "BUY" : "SELL";
           const ticker = m[2];
@@ -127,7 +161,27 @@ async function fetchQuiverQuantTrades() {
             text: `${fullName} (${role || "Congress"}) filed STOCK Act: ${transaction} $${ticker} — Filed ${filingDate}`,
             date: filingDate,
           });
+          foundForPolitician = true;
         }
+      }
+
+      // Format 5: Ultra-broad — any ticker-like link /stock/TICKER/
+      if (!foundForPolitician) {
+        const linkMatches = [...article.matchAll(/\/stock\/(\w+)\//gi)];
+        const txGuess = article.toLowerCase().includes("purchase") ? "BUY" : "SELL";
+        for (const m of linkMatches) {
+          const ticker = m[1];
+          trades.push({
+            source: "QuiverQuant Congress",
+            text: `${fullName} (${role || "Congress"}) filed STOCK Act: ${txGuess} $${ticker} — Filed ${filingDate}`,
+            date: filingDate,
+          });
+          foundForPolitician = true;
+        }
+      }
+
+      if (!foundForPolitician) {
+        console.log(`[QuiverQuant] WARNING: No trades parsed for ${fullName}`);
       }
     }
 
