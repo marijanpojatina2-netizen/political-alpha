@@ -4,10 +4,5 @@
       "path": "/api/cron",
       "schedule": "0 7 * * *"
     }
-  ],
-  "functions": {
-    "api/cron.mjs": {
-      "maxDuration": 60
-    }
-  }
-} 
+  ]
+}
