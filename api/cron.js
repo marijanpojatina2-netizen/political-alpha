@@ -405,12 +405,17 @@ If there are no identifiable trades in the data, still analyze any news for mark
 async function analyzeWithGemini(items) {
   const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
   const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
-  
+
   const itemText = items
     .map((t, i) => `[${i + 1}] (${t.source}, ${new Date(t.date).toLocaleDateString()}): ${t.text}`)
     .join("\n\n");
 
   const prompt = `Here is data from the last 24 hours:\n\n${itemText}\n\nAnalyze these and return the structured JSON as instructed.`;
+
+  // DEBUG: Log what we're sending to Gemini
+  console.log("=== GEMINI INPUT (first 3000 chars) ===");
+  console.log(prompt.substring(0, 3000));
+  console.log("=== END GEMINI INPUT ===");
 
   const result = await model.generateContent({
     contents: [{ role: "user", parts: [{ text: prompt }] }],
@@ -419,6 +424,12 @@ async function analyzeWithGemini(items) {
   });
 
   const responseText = result.response.text();
+
+  // DEBUG: Log what Gemini returned
+  console.log("=== GEMINI OUTPUT ===");
+  console.log(responseText);
+  console.log("=== END GEMINI OUTPUT ===");
+
   const cleaned = responseText.replace(/```json\s*/g, "").replace(/```\s*/g, "").trim();
   return JSON.parse(cleaned);
 }
